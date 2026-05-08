@@ -1,0 +1,43 @@
+[Unit]
+Description=GameCoach Telegram Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# Run as a dedicated unprivileged user. Create with:
+#   sudo useradd --system --home /opt/game_bot --shell /usr/sbin/nologin gamebot
+User=gamebot
+Group=gamebot
+
+WorkingDirectory=/opt/game_bot
+EnvironmentFile=/opt/game_bot/.env
+
+# Use the venv Python so we don't depend on system site-packages.
+ExecStart=/opt/game_bot/.venv/bin/python -m bot.main
+
+Restart=on-failure
+RestartSec=5s
+StartLimitInterval=120s
+StartLimitBurst=5
+
+# stdout/stderr go to journald; rotated bot.log lives under /opt/game_bot/logs/.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=game_coach
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/game_bot/data /opt/game_bot/logs
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target
