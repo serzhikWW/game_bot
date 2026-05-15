@@ -49,6 +49,9 @@ class Settings:
     free_analyses_per_day: int
     max_video_size_mb: int
     telegram_file_limit_mb: int
+    telegram_api_base_url: str | None
+    telegram_api_file_url: str | None
+    telegram_api_local_data_dir: Path | None
     admin_telegram_id: int | None
     log_level: str
     db_path: Path
@@ -82,6 +85,17 @@ def _load_settings() -> Settings:
         # Telegram's standard Bot API caps `getFile` downloads at 20 MB.
         # Override to 2000 if you run a self-hosted Local Bot API server.
         telegram_file_limit_mb=_optional_int("TELEGRAM_FILE_LIMIT_MB", 20),
+        # Set both to point PTB at a Local Bot API server. Leave blank to
+        # use the default https://api.telegram.org cloud endpoint.
+        telegram_api_base_url=_optional_str("TELEGRAM_API_BASE_URL", "") or None,
+        telegram_api_file_url=_optional_str("TELEGRAM_API_FILE_URL", "") or None,
+        # In `--local` mode the Bot API server returns a CONTAINER path like
+        # /var/lib/telegram-bot-api/<token>/videos/file_1.mp4. We translate
+        # that to the HOST mount so we can read the file directly off disk.
+        telegram_api_local_data_dir=(
+            Path(_optional_str("TELEGRAM_API_LOCAL_DATA_DIR", "")).expanduser()
+            if _optional_str("TELEGRAM_API_LOCAL_DATA_DIR", "") else None
+        ),
         admin_telegram_id=admin_id,
         log_level=_optional_str("LOG_LEVEL", "INFO").upper(),
         db_path=db_path,

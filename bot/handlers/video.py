@@ -8,11 +8,13 @@ and streams the result back as one or more text messages.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from pathlib import Path
 
 from telegram import Update
 from telegram.constants import ChatAction
-from telegram.error import BadRequest
+from telegram.error import BadRequest, TimedOut
 from telegram.ext import ContextTypes
 
 from bot.config import Settings
@@ -30,6 +32,45 @@ from bot.services.registry import GameRegistry
 
 
 logger = logging.getLogger(__name__)
+
+
+CONTAINER_DATA_ROOT = "/var/lib/telegram-bot-api"
+
+
+async def _read_local_bot_api_file(
+    file_path_or_url: str, host_root: Path
+) -> bytes | None:
+    """
+    Map a Local Bot API file reference to a host path and read it.
+
+    PTB v21 may give us either:
+      * the raw container path  `/var/lib/telegram-bot-api/<token>/videos/x.mp4`
+      * the full URL with the container path tacked on, e.g.
+        `http://localhost:8081/file/bot<token>//var/lib/telegram-bot-api/<token>/videos/x.mp4`
+
+    We just look for the `/var/lib/telegram-bot-api/` marker anywhere in the
+    string and take everything after it. Returns None if not found or the
+    translated host file doesn't exist (caller falls back to HTTP).
+    """
+    marker = CONTAINER_DATA_ROOT + "/"
+    idx = file_path_or_url.find(marker)
+    if idx < 0:
+        return None
+    rel = file_path_or_url[idx + len(marker):]
+    host_path = host_root / rel
+    if not host_path.is_file():
+        logger.warning(
+            "local_bot_api_file_missing host=%s ref=%s",
+            host_path, file_path_or_url,
+        )
+        return None
+    data = await asyncio.to_thread(host_path.read_bytes)
+    # Best-effort cleanup so the data volume doesn't grow forever.
+    try:
+        await asyncio.to_thread(host_path.unlink)
+    except OSError:
+        pass
+    return data
 
 
 async def send_analysis_chunks(
@@ -139,8 +180,44 @@ def make_video_handler(
         )
 
         try:
-            tg_file = await media.get_file()
-            video_bytes = bytes(await tg_file.download_as_bytearray())
+            tg_file = await media.get_file(read_timeout=300, write_timeout=300)
+            logger.info(
+                "tg_file_received user_id=%d file_path=%s local_dir=%s",
+                user.id, tg_file.file_path,
+                settings.telegram_api_local_data_dir,
+            )
+            # Local Bot API in --local mode writes the file straight to disk
+            # and returns its CONTAINER path. Read it from the matching host
+            # mount instead of fetching back over HTTP.
+            video_bytes_opt: bytes | None = None
+            if settings.telegram_api_local_data_dir and tg_file.file_path:
+                video_bytes_opt = await _read_local_bot_api_file(
+                    tg_file.file_path, settings.telegram_api_local_data_dir
+                )
+                if video_bytes_opt is not None:
+                    logger.info(
+                        "local_bot_api_file_read user_id=%d bytes=%d",
+                        user.id, len(video_bytes_opt),
+                    )
+            if video_bytes_opt is None:
+                logger.info("falling_back_to_http_download user_id=%d", user.id)
+                video_bytes_opt = bytes(
+                    await tg_file.download_as_bytearray(read_timeout=300)
+                )
+            video_bytes = video_bytes_opt
+        except TimedOut:
+            # In Local Bot API `--local` mode the server downloads the file
+            # from MTProto before answering getFile. For larger clips this
+            # can exceed even generous timeouts.
+            logger.warning(
+                "telegram_download_timeout user_id=%d size=%s",
+                user.id, media.file_size,
+            )
+            await progress.edit_text(
+                "Downloading your video took too long. "
+                "Please try a shorter clip or retry in a moment."
+            )
+            return
         except BadRequest as e:
             # Most common cause: file is larger than Telegram's getFile cap
             # (20 MB on the standard Bot API). We pre-check size, but the

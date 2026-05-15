@@ -61,13 +61,34 @@ def build_application() -> Application:
         db, settings.free_analyses_per_day, settings.admin_telegram_id
     )
 
-    application = (
+    builder = (
         Application.builder()
         .token(settings.telegram_bot_token)
+        # In `--local` mode, the Bot API server downloads the file from
+        # MTProto BEFORE answering getFile, so 5s default is way too short
+        # for multi-MB clips. Be generous; the bot itself is async anyway.
+        .connect_timeout(15.0)
+        .read_timeout(300.0)
+        .write_timeout(300.0)
+        .pool_timeout(15.0)
         .post_init(_post_init)
         .post_shutdown(_post_shutdown)
-        .build()
     )
+    # Point PTB at a self-hosted Local Bot API server when configured.
+    # Both base URLs must be set together — they point at /bot and /file
+    # routes respectively (see PTB docs on `Application.builder().base_url`).
+    if settings.telegram_api_base_url and settings.telegram_api_file_url:
+        builder = (
+            builder
+            .base_url(settings.telegram_api_base_url)
+            .base_file_url(settings.telegram_api_file_url)
+            .local_mode(True)
+        )
+        logger.info(
+            "telegram_local_api_enabled base=%s",
+            settings.telegram_api_base_url,
+        )
+    application = builder.build()
     application.bot_data.update(
         {"db": db, "gemini": gemini, "registry": registry,
          "analyzer": analyzer, "usage_guard": usage_guard}
