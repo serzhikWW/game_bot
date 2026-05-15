@@ -46,6 +46,7 @@ def _optional_str(name: str, default: str) -> str:
 class Settings:
     telegram_bot_token: str
     gemini_api_key: str
+    gemini_model: str
     free_analyses_per_day: int
     max_video_size_mb: int
     telegram_file_limit_mb: int
@@ -80,6 +81,9 @@ def _load_settings() -> Settings:
     return Settings(
         telegram_bot_token=_require("TELEGRAM_BOT_TOKEN"),
         gemini_api_key=_require("GEMINI_API_KEY"),
+        # 1.5-pro was deprecated; current generation is 2.5-flash (fast, cheap)
+        # or gemini-2.5-pro (slower, deeper). Override via env when needed.
+        gemini_model=_optional_str("GEMINI_MODEL", "gemini-2.5-flash"),
         free_analyses_per_day=_optional_int("FREE_ANALYSES_PER_DAY", 2),
         max_video_size_mb=_optional_int("MAX_VIDEO_SIZE_MB", 200),
         # Telegram's standard Bot API caps `getFile` downloads at 20 MB.

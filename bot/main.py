@@ -53,7 +53,7 @@ def build_application() -> Application:
     configure_logging(settings.log_level, settings.log_file)
 
     db = Database(settings.db_path)
-    gemini = GeminiService(settings.gemini_api_key)
+    gemini = GeminiService(settings.gemini_api_key, model=settings.gemini_model)
     registry = GameRegistry()
     registry.load_all()
     analyzer = Analyzer(db)

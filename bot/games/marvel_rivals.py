@@ -22,9 +22,11 @@ logger = logging.getLogger(__name__)
 
 
 HEROES: list[str] = [
-    # Vanguards (12)
+    # Vanguards (14 — includes Devil Dinosaur added in Season 8 + Deadpool variant)
     "Angela",
     "Captain America",
+    "Deadpool (Vanguard)",
+    "Devil Dinosaur",
     "Doctor Strange",
     "Emma Frost",
     "Groot",
@@ -35,12 +37,13 @@ HEROES: list[str] = [
     "The Thing",
     "Thor",
     "Venom",
-    # Duelists (25)
+    # Duelists (26 — includes Deadpool (Duelist))
     "Black Cat",
     "Black Panther",
     "Black Widow",
     "Blade",
     "Daredevil",
+    "Deadpool (Duelist)",
     "Elsa Bloodstone",
     "Hawkeye",
     "Hela",
@@ -61,9 +64,10 @@ HEROES: list[str] = [
     "The Punisher",
     "Winter Soldier",
     "Wolverine",
-    # Strategists (11)
+    # Strategists (12 — includes Deadpool (Strategist))
     "Adam Warlock",
     "Cloak & Dagger",
+    "Deadpool (Strategist)",
     "Gambit",
     "Invisible Woman",
     "Jeff the Land Shark",
@@ -73,9 +77,57 @@ HEROES: list[str] = [
     "Rocket Raccoon",
     "Ultron",
     "White Fox",
-    # Multi-Role (1)
-    "Deadpool",
 ]
+
+
+# Hero kit briefs injected into the Gemini prompt to anchor it on real facts
+# and prevent confident hallucinations like inventing ultimate names.
+#
+# Only fill in entries you have verified — Gemini will fall back to its own
+# (often incorrect) knowledge for heroes missing here. Better to leave a hero
+# absent than to put wrong data in the brief.
+#
+# Format guidance: short bullet-style sentences. Mention role, primary +
+# secondary attack, named abilities, ultimate, key passive. Avoid HP/CD
+# numbers (they change often with patches).
+HERO_BRIEFS: dict[str, str] = {
+    "Deadpool (Duelist)": (
+        "Role: Duelist (dive / off-tank brawler).\n"
+        "Loadout: Twin Pistols (ranged, primary fire) AND dual Katanas "
+        "(close-range melee, separate input). Switches weapons based on range.\n"
+        "Mobility: short dash (LShift). Has 'Selfie' / Pose ability — brief "
+        "self-heal + iframes used to escape or save low HP.\n"
+        "Ultimate: katana spin/dash burst — very high damage in close range, "
+        "weak at distance. NOT 'Good Morning Sunshine'.\n"
+        "Passive: Healing Factor — regen out of combat.\n"
+        "Playstyle: dive support / pick off low-HP backline, NOT a frontline tank."
+    ),
+    "Deadpool (Vanguard)": (
+        "Role: Vanguard (frontline / tank variant).\n"
+        "Heavier weapon focus on katanas for melee pressure and zone control. "
+        "Healing Factor passive lets him soak damage and disengage.\n"
+        "Has Selfie / Pose for self-heal + iframes; dash for repositioning.\n"
+        "Playstyle: hold space, body-block, NOT a ranged duelist — he expects "
+        "to be in melee taking damage."
+    ),
+    "Deadpool (Strategist)": (
+        "Role: Strategist (support variant).\n"
+        "Focuses on enabling allies — healing pose, utility from chimichangas "
+        "or similar throwable item, peeling for backline.\n"
+        "Still has pistols + katanas but used reactively, not as primary DPS.\n"
+        "Playstyle: peel for allies, top up health with utility, NOT solo carry."
+    ),
+    "Devil Dinosaur": (
+        "Role: Vanguard (released Season 8, May 2026).\n"
+        "Frontline beast — bleeding bite attacks as primary, large hitbox, "
+        "forcefield shield ability for damage mitigation.\n"
+        "Ultimate transforms him into a larger, more aggressive form ('Behemoth' "
+        "rampage style) with increased damage.\n"
+        "Team-up: 'Primal Punishment' with The Punisher — Punisher can ride "
+        "on his back.\n"
+        "Playstyle: aggressive frontline brawler, dive enemy backline with bleed."
+    ),
+}
 
 
 class MarvelRivalsPlugin(BaseGamePlugin):
@@ -98,10 +150,43 @@ class MarvelRivalsPlugin(BaseGamePlugin):
         if character is None:
             raise ValueError("Marvel Rivals requires a character selection")
 
+        brief = HERO_BRIEFS.get(character)
+        brief_block = (
+            f"\nHERO BRIEF (use these as facts — do NOT contradict them):\n"
+            f"{brief}\n"
+        ) if brief else ""
+
         return (
-            f"You are a professional Marvel Rivals coach.\n"
-            f"The player is playing as {character}.\n\n"
-            "Analyze the video and respond in this EXACT format:\n\n"
+            "You are a professional Marvel Rivals coach analyzing a gameplay "
+            f"clip from the player's first-person perspective.\n\n"
+            f"The player selected: {character}\n"
+            f"{brief_block}\n"
+            "=== ANTI-HALLUCINATION RULES (read carefully) ===\n"
+            "1. If you are NOT 100% sure which enemy hero is on screen, "
+            "describe what you observe (e.g. 'a support hero with a white "
+            "outfit and ice effects') instead of guessing a name. "
+            "Many heroes look visually similar (Emma Frost vs Doctor Strange, "
+            "Iron Man vs War Machine, etc.) — don't guess.\n"
+            "2. NEVER invent ability or ultimate names. If the player's hero "
+            "has a HERO BRIEF above, use ONLY ability names from it. If no "
+            "brief is provided, use generic descriptions ('the dash', 'the "
+            "ultimate', 'the self-heal') rather than fabricating names.\n"
+            "3. Distinguish the player's hero from enemy heroes — the "
+            "player's HUD (health bar, ability icons at the bottom) belongs "
+            "to the player, not to enemies they're looking at.\n"
+            "4. If you cannot tell what happened at a moment, say 'unclear "
+            "moment' rather than fabricate a narrative.\n"
+            "5. Pay attention to the ACTUAL target the player is shooting "
+            "at, not who appears nearby. Crosshair placement and damage "
+            "numbers (if visible) tell the truth.\n"
+            "6. NEVER invent HP percentages, exact damage numbers, or "
+            "cooldown timers if they are not clearly visible on screen. "
+            "Many clips are REPLAYS where a playback control bar covers the "
+            "bottom HUD — in that case the player's HP/ability icons are "
+            "hidden. Use qualitative terms instead ('low HP', 'mid HP', "
+            "'critically low', 'full HP', 'just used ultimate') rather than "
+            "fabricated percentages like '60% → 80%'.\n\n"
+            "=== RESPOND IN THIS EXACT FORMAT ===\n\n"
             f"🎯 HERO: {character}\n"
             "⏱ CLIP DURATION: [X min Y sec]\n\n"
             "❌ TOP 3 MISTAKES:\n"
@@ -114,10 +199,18 @@ class MarvelRivalsPlugin(BaseGamePlugin):
             "💡 MAIN RECOMMENDATION:\n"
             "[One concrete tip — 2-3 sentences]\n\n"
             "📊 DECISION QUALITY: [X/10]\n\n"
-            "Rules: always use MM:SS timestamps from the clip; "
-            "name abilities specifically (e.g. ultimate names, dash, shield); "
-            "use numbers where possible (HP, distance, cooldowns); "
-            "avoid vague phrases like \"play better\" or \"position well\"."
+            "=== STYLE RULES ===\n"
+            "- TIMESTAMPS: use MM:SS format ONLY. Examples: '00:05', "
+            "'00:23', '01:14'. DO NOT use HH:MM:SS like '00:00:05' — clips "
+            "are short and seconds-relative-to-start is enough.\n"
+            "- Reference abilities by names from HERO BRIEF (or use generic "
+            "descriptions if no brief).\n"
+            "- Use numbers ONLY when clearly visible (visible kill count, "
+            "visible damage popup). For HP and cooldowns prefer qualitative "
+            "terms unless the HUD is unambiguously readable.\n"
+            "- Avoid vague phrases like 'play better' or 'position well'.\n"
+            "- If uncertain about an event, prefix with 'Likely:' or "
+            "'Possibly:' rather than stating it as fact."
         )
 
     async def analyze(

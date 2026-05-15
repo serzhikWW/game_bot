@@ -30,7 +30,7 @@ import google.generativeai as genai
 logger = logging.getLogger(__name__)
 
 
-DEFAULT_MODEL = "gemini-1.5-pro"
+DEFAULT_MODEL = "gemini-2.5-flash"
 UPLOAD_POLL_INTERVAL_S = 2.0
 UPLOAD_POLL_TIMEOUT_S = 120.0
 GENERATE_TIMEOUT_S = 120.0
