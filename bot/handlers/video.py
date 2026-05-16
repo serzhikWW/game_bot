@@ -20,6 +20,7 @@ from telegram.ext import ContextTypes
 from bot.config import Settings
 from bot.core.analyzer import Analyzer
 from bot.core.formatter import format_result
+from bot.core.i18n import get_user_language, t
 from bot.core.usage import UsageGuard
 from bot.games.base import AnalysisResult
 from bot.handlers import state
@@ -79,18 +80,24 @@ async def send_analysis_chunks(
     usage_guard: UsageGuard | None = None,
     telegram_id: int | None = None,
     username: str | None = None,
+    language_code: str = "en",
 ) -> None:
     """Send the analysis as one or more plain-text chunks within Telegram limits."""
     chunks = format_result(result)
     for chunk in chunks:
         await chat.send_message(chunk)
     footer_parts = [
-        f"— tokens: {result.tokens_used} · "
-        f"{result.processing_seconds:.1f}s · source: {result.source}"
+        t(
+            language_code,
+            "footer",
+            tokens=result.tokens_used,
+            seconds=result.processing_seconds,
+            source=result.source,
+        )
     ]
     if usage_guard is not None and telegram_id is not None:
-        status = await usage_guard.check(telegram_id, username)
-        footer_parts.append(status.remaining_text())
+        status = await usage_guard.check(telegram_id, username, language_code)
+        footer_parts.append(status.remaining_text(language_code))
     await chat.send_message("\n".join(footer_parts))
 
 
@@ -101,12 +108,10 @@ def make_unsupported_attachment_handler():
         if message is None:
             return
         user_data = context.user_data if context.user_data is not None else {}
+        lang = await get_user_language(context, update.effective_user)
         if state.get_state(user_data) != state.FlowState.AWAITING_VIDEO:
             return
-        await message.reply_text(
-            "Please send a video file (MP4). Photos, audio and other files "
-            "aren't supported for analysis."
-        )
+        await message.reply_text(t(lang, "unsupported_attachment"))
     return on_unsupported
 
 
@@ -121,11 +126,10 @@ def make_video_handler(
         if message is None:
             return
         user_data = context.user_data if context.user_data is not None else {}
+        lang = await get_user_language(context, update.effective_user)
 
         if state.get_state(user_data) != state.FlowState.AWAITING_VIDEO:
-            await message.reply_text(
-                "Send /games first, pick a game and a hero, then upload the clip."
-            )
+            await message.reply_text(t(lang, "send_games_first"))
             return
 
         game_id = user_data.get(state.KEY_GAME_ID)
@@ -133,7 +137,7 @@ def make_video_handler(
         plugin = registry.get(game_id) if game_id else None
         if plugin is None:
             state.reset(user_data)
-            await message.reply_text("Unknown game in current flow. Send /games.")
+            await message.reply_text(t(lang, "unknown_current_game"))
             return
 
         # Pick the right file object — Telegram delivers some clips as Video,
@@ -142,7 +146,7 @@ def make_video_handler(
             message.document if (message.document and (message.document.mime_type or "").startswith("video/")) else None
         )
         if media is None:
-            await message.reply_text("Please send a video file (MP4).")
+            await message.reply_text(t(lang, "send_video"))
             return
 
         effective_mb = settings.effective_video_mb(plugin.config.max_video_mb)
@@ -154,30 +158,33 @@ def make_video_handler(
                 # The bot would in principle accept up to plugin.max, but
                 # Telegram's standard Bot API caps downloads at 20 MB.
                 hint = (
-                    "\n\nTelegram's Bot API limits file downloads to "
-                    f"{settings.telegram_file_limit_mb} MB. To process larger "
-                    "clips, run a Local Bot API server (see README)."
+                    t(
+                        lang,
+                        "telegram_limit_hint",
+                        limit_mb=settings.telegram_file_limit_mb,
+                    )
                 )
             await message.reply_text(
-                f"Your clip is {actual_mb} MB — too large. "
-                f"Please send a shorter clip (max {effective_mb} MB).{hint}"
+                t(
+                    lang,
+                    "clip_too_large",
+                    actual_mb=actual_mb,
+                    max_mb=effective_mb,
+                    hint=hint,
+                )
             )
             return
 
         # Limit check
         user = update.effective_user
         assert user is not None
-        status = await usage_guard.check(user.id, user.username)
+        status = await usage_guard.check(user.id, user.username, lang)
         if status.is_exhausted:
-            await message.reply_text(
-                f"⛔️ Daily limit reached ({status.limit}/day). Try again tomorrow."
-            )
+            await message.reply_text(t(lang, "daily_limit", limit=status.limit))
             return
 
         await message.chat.send_action(ChatAction.TYPING)
-        progress = await message.reply_text(
-            "⏳ Analyzing... ~30-60 seconds. Please wait."
-        )
+        progress = await message.reply_text(t(lang, "analyzing_video"))
 
         try:
             tg_file = await media.get_file(read_timeout=300, write_timeout=300)
@@ -214,8 +221,7 @@ def make_video_handler(
                 user.id, media.file_size,
             )
             await progress.edit_text(
-                "Downloading your video took too long. "
-                "Please try a shorter clip or retry in a moment."
+                t(lang, "download_timeout")
             )
             return
         except BadRequest as e:
@@ -229,21 +235,19 @@ def make_video_handler(
                     user.id, media.file_size, settings.telegram_file_limit_mb,
                 )
                 await progress.edit_text(
-                    f"This file is too big for Telegram's Bot API to deliver "
-                    f"(limit ~{settings.telegram_file_limit_mb} MB). "
-                    "Please send a shorter clip."
+                    t(
+                        lang,
+                        "telegram_file_too_big",
+                        limit_mb=settings.telegram_file_limit_mb,
+                    )
                 )
             else:
                 logger.exception("telegram_download_failed user_id=%d", user.id)
-                await progress.edit_text(
-                    "Couldn't download your video from Telegram. Please try again."
-                )
+                await progress.edit_text(t(lang, "download_failed"))
             return
         except Exception:
             logger.exception("telegram_download_failed user_id=%d", user.id)
-            await progress.edit_text(
-                "Couldn't download your video from Telegram. Please try again."
-            )
+            await progress.edit_text(t(lang, "download_failed"))
             return
 
         # Hand off to plugin via analyzer
@@ -254,29 +258,24 @@ def make_video_handler(
                 username=user.username,
                 user_input=video_bytes,
                 character=character,
+                language_code=lang,
             )
         except GeminiTimeoutError:
-            await progress.edit_text(
-                "Analysis taking too long, please retry with a shorter clip."
-            )
+            await progress.edit_text(t(lang, "analysis_timeout"))
             return
         except GeminiUploadFailedError:
-            await progress.edit_text(
-                "Couldn't process the video. Try a different file or shorter clip."
-            )
+            await progress.edit_text(t(lang, "video_processing_failed"))
             return
         except GeminiError as e:
             logger.exception("gemini_error user_id=%d", user.id)
-            await progress.edit_text(f"Analysis failed: {e}")
+            await progress.edit_text(t(lang, "analysis_failed", error=e))
             return
         except ValueError as e:
             await progress.edit_text(f"⚠️ {e}")
             return
         except Exception:
             logger.exception("video_analyze_failed user_id=%d game=%s", user.id, game_id)
-            await progress.edit_text(
-                "Something went wrong while analyzing. Please try again."
-            )
+            await progress.edit_text(t(lang, "generic_analysis_failed"))
             return
 
         state.reset(user_data)
@@ -287,6 +286,7 @@ def make_video_handler(
             usage_guard=usage_guard,
             telegram_id=user.id,
             username=user.username,
+            language_code=lang,
         )
 
     return on_video

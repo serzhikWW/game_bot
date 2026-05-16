@@ -94,11 +94,13 @@ def build_application() -> Application:
          "analyzer": analyzer, "usage_guard": usage_guard}
     )
 
-    # /start, /help, /games, /cancel, /limits
+    # /start, /help, /games, /language, /cancel, /limits
     cmds = start.make_handlers(registry, usage_guard)
     application.add_handler(CommandHandler("start", cmds["start"]))
     application.add_handler(CommandHandler("help", cmds["help"]))
     application.add_handler(CommandHandler("games", cmds["games"]))
+    application.add_handler(CommandHandler("language", cmds["language"]))
+    application.add_handler(CommandHandler("lang", cmds["language"]))
     application.add_handler(CommandHandler("cancel", cmds["cancel"]))
     application.add_handler(CommandHandler("limits", cmds["limits"]))
 

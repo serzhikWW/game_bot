@@ -38,12 +38,17 @@ class Analyzer:
         username: str | None,
         user_input: str | bytes,
         character: str | None,
+        language_code: str = "en",
     ) -> AnalysisResult:
         cfg = plugin.config
-        user = await self._db.get_or_create_user(telegram_id, username)
+        user = await self._db.get_or_create_user(
+            telegram_id, username, language_code
+        )
 
         try:
-            result = await plugin.analyze(user_input, character, telegram_id)
+            result = await plugin.analyze(
+                user_input, character, telegram_id, language_code
+            )
         except Exception as e:
             logger.warning(
                 "analysis_failed user_id=%d game=%s character=%s "

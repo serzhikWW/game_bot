@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY,
     telegram_id INTEGER UNIQUE NOT NULL,
     username TEXT,
+    language_code TEXT NOT NULL DEFAULT 'en',
     analyses_today INTEGER NOT NULL DEFAULT 0,
     last_analysis_date DATE,
     total_analyses INTEGER NOT NULL DEFAULT 0,
@@ -68,6 +69,7 @@ def _row_to_user(row: aiosqlite.Row) -> User:
         id=row["id"],
         telegram_id=row["telegram_id"],
         username=row["username"],
+        language_code=row["language_code"],
         analyses_today=row["analyses_today"],
         last_analysis_date=_parse_date(row["last_analysis_date"]),
         total_analyses=row["total_analyses"],
@@ -105,9 +107,20 @@ class Database:
         await conn.execute("PRAGMA foreign_keys = ON")
         await conn.execute("PRAGMA journal_mode = WAL")
         await conn.executescript(SCHEMA)
+        await self._migrate(conn)
         await conn.commit()
         self._conn = conn
         logger.info("database_connected path=%s", self._path)
+
+    async def _migrate(self, conn: aiosqlite.Connection) -> None:
+        """Apply lightweight schema additions for existing SQLite files."""
+        async with conn.execute("PRAGMA table_info(users)") as cur:
+            columns = {row["name"] for row in await cur.fetchall()}
+        if "language_code" not in columns:
+            await conn.execute(
+                "ALTER TABLE users ADD COLUMN language_code TEXT NOT NULL DEFAULT 'en'"
+            )
+            logger.info("database_migration_added_language_code")
 
     async def close(self) -> None:
         if self._conn is None:
@@ -124,12 +137,18 @@ class Database:
     # --- users ---------------------------------------------------------
 
     async def get_or_create_user(
-        self, telegram_id: int, username: str | None
+        self,
+        telegram_id: int,
+        username: str | None,
+        language_code: str = "en",
     ) -> User:
         """Insert-if-missing, then update username if it changed, and return the row."""
         await self.conn.execute(
-            "INSERT OR IGNORE INTO users (telegram_id, username) VALUES (?, ?)",
-            (telegram_id, username),
+            """
+            INSERT OR IGNORE INTO users (telegram_id, username, language_code)
+            VALUES (?, ?, ?)
+            """,
+            (telegram_id, username, language_code),
         )
         await self.conn.execute(
             "UPDATE users SET username = ? WHERE telegram_id = ? AND IFNULL(username,'') != IFNULL(?, '')",
@@ -142,6 +161,13 @@ class Database:
             row = await cur.fetchone()
         assert row is not None, "row should exist after upsert"
         return _row_to_user(row)
+
+    async def set_user_language(self, telegram_id: int, language_code: str) -> None:
+        await self.conn.execute(
+            "UPDATE users SET language_code = ? WHERE telegram_id = ?",
+            (language_code, telegram_id),
+        )
+        await self.conn.commit()
 
     async def get_user(self, telegram_id: int) -> User | None:
         async with self.conn.execute(

@@ -16,6 +16,7 @@ class User:
     id: int
     telegram_id: int
     username: str | None
+    language_code: str
     analyses_today: int
     last_analysis_date: date | None
     total_analyses: int

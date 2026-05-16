@@ -88,6 +88,7 @@ class BaseGamePlugin(ABC):
         user_input: str | bytes,
         character: str | None,
         user_id: int,
+        language_code: str = "en",
     ) -> AnalysisResult:
         """
         Run analysis and return the result.
@@ -100,10 +101,17 @@ class BaseGamePlugin(ABC):
         `config.has_characters` is True, otherwise None.
 
         `user_id` is the Telegram user id, useful for logging/tracing.
+
+        `language_code` controls the language of generated coaching text
+        for plugins that support localization.
         """
 
     @abstractmethod
-    def get_prompt(self, character: str | None) -> str:
+    def get_prompt(
+        self,
+        character: str | None,
+        language_code: str = "en",
+    ) -> str:
         """Return the Gemini prompt template for this game/character."""
 
     def validate_character(self, character: str | None) -> None:

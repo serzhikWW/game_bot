@@ -37,11 +37,18 @@ class UsageStatus:
             return False
         return self.used_today >= self.limit
 
-    def remaining_text(self) -> str:
+    def remaining_text(self, language_code: str = "en") -> str:
         """Human-readable line for footers and /limits."""
+        from bot.core.i18n import t
+
         if self.is_admin:
-            return "Admin — unlimited analyses."
-        return f"Analyses left today: {self.remaining}/{self.limit}."
+            return t(language_code, "limit_admin")
+        return t(
+            language_code,
+            "limit_remaining",
+            remaining=self.remaining,
+            limit=self.limit,
+        )
 
 
 class UsageGuard:
@@ -62,10 +69,13 @@ class UsageGuard:
         return self._limit
 
     async def check(
-        self, telegram_id: int, username: str | None
+        self,
+        telegram_id: int,
+        username: str | None,
+        language_code: str = "en",
     ) -> UsageStatus:
         """Returns the user's current usage for today (after midnight reset)."""
-        await self._db.get_or_create_user(telegram_id, username)
+        await self._db.get_or_create_user(telegram_id, username, language_code)
         user = await self._db.reset_daily_if_stale(telegram_id, date.today())
         return UsageStatus(
             used_today=user.analyses_today,

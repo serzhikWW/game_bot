@@ -281,7 +281,11 @@ class Dota2Plugin(BaseGamePlugin):
             ),
         )
 
-    def get_prompt(self, character: str | None) -> str:
+    def get_prompt(
+        self,
+        character: str | None,
+        language_code: str = "en",
+    ) -> str:
         # Returned for completeness; the actual prompt sent to Gemini is built
         # inside `_build_full_prompt` once we have the match data.
         return _PROMPT_TEMPLATE
@@ -291,6 +295,7 @@ class Dota2Plugin(BaseGamePlugin):
         user_input: str | bytes,
         character: str | None,
         user_id: int,
+        language_code: str = "en",
     ) -> AnalysisResult:
         if not isinstance(user_input, str):
             raise TypeError(
@@ -315,7 +320,7 @@ class Dota2Plugin(BaseGamePlugin):
 
         detail = _resolve_player(match_json, slot)
         match_data = _build_match_data(detail, match_json)
-        prompt = _build_full_prompt(match_data)
+        prompt = _build_full_prompt(match_data, language_code)
 
         out = await container.get_gemini().analyze_text(prompt)
         logger.info(
@@ -384,6 +389,8 @@ _PROMPT_TEMPLATE = """\
 You are a professional Dota 2 coach.
 Below is structured match data for one player.
 
+Language instruction: {language_instruction}
+
 Analyze performance and respond in this EXACT format:
 
 🗡️ HERO: {hero}
@@ -408,12 +415,22 @@ Match data:
 """
 
 
-def _build_full_prompt(match_data: dict) -> str:
+def _language_instruction(language_code: str) -> str:
+    if language_code.lower().startswith("ru"):
+        return (
+            "Respond in Russian. Keep Dota hero, item, and ability names in "
+            "their common English names when that is clearer."
+        )
+    return "Respond in English."
+
+
+def _build_full_prompt(match_data: dict, language_code: str = "en") -> str:
     import json
 
     # Render the template with hero/result/duration so they show in the header,
     # and dump the whole structured payload for the model.
     return _PROMPT_TEMPLATE.format(
+        language_instruction=_language_instruction(language_code),
         hero=match_data["hero"],
         result=match_data["result"],
         duration=match_data["duration"],

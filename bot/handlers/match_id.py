@@ -13,6 +13,7 @@ import logging
 from telegram import Update
 from telegram.ext import ContextTypes
 
+from bot.core.i18n import get_user_language, t
 from bot.handlers import state
 from bot.handlers.keyboards import slot_picker_keyboard
 from bot.games.dota2 import (
@@ -35,28 +36,20 @@ def make_text_handler(registry: GameRegistry):
         if message is None or not message.text:
             return
         user_data = context.user_data if context.user_data is not None else {}
+        lang = await get_user_language(context, update.effective_user)
 
         flow = state.get_state(user_data)
         if flow == state.FlowState.AWAITING_VIDEO:
-            await message.reply_text(
-                "I'm waiting for a video clip. Please upload an MP4 "
-                "(or send /cancel to start over)."
-            )
+            await message.reply_text(t(lang, "waiting_video"))
             return
         if flow == state.FlowState.AWAITING_HERO:
-            await message.reply_text(
-                "Please pick a hero from the keyboard above "
-                "(or send /cancel to start over)."
-            )
+            await message.reply_text(t(lang, "waiting_hero"))
             return
         if flow == state.FlowState.AWAITING_SLOT:
-            await message.reply_text(
-                "Please pick your slot from the keyboard above "
-                "(or send /cancel to start over)."
-            )
+            await message.reply_text(t(lang, "waiting_slot"))
             return
         if flow == state.FlowState.IDLE:
-            await message.reply_text("Send /games to pick a game.")
+            await message.reply_text(t(lang, "idle_text"))
             return
         if flow != state.FlowState.AWAITING_MATCH_ID:
             return
@@ -67,7 +60,7 @@ def make_text_handler(registry: GameRegistry):
 
         plugin = registry.get("dota2")
         if not isinstance(plugin, Dota2Plugin):
-            await message.reply_text("Dota 2 plugin not available right now.")
+            await message.reply_text(t(lang, "dota_unavailable"))
             return
 
         # Validate match-id format up front so we can show a clear error
@@ -77,7 +70,7 @@ def make_text_handler(registry: GameRegistry):
             await message.reply_text(f"⚠️ {e}")
             return
 
-        progress = await message.reply_text("⏳ Fetching match data...")
+        progress = await message.reply_text(t(lang, "fetching_match"))
 
         try:
             summaries = await plugin.summarize_match(match_id)
@@ -92,18 +85,20 @@ def make_text_handler(registry: GameRegistry):
             return
         except Exception:
             logger.exception("opendota_fetch_failed match_id=%d", match_id)
-            await progress.edit_text(
-                "Failed to fetch match data, please try again later."
-            )
+            await progress.edit_text(t(lang, "dota_failed"))
             return
 
         state.set_state(user_data, state.FlowState.AWAITING_SLOT)
         user_data[state.KEY_MATCH_ID] = match_id
 
         await progress.edit_text(
-            f"Match `{match_id}` found. Pick which slot was you:",
+            t(lang, "match_found", match_id=match_id),
             parse_mode="Markdown",
-            reply_markup=slot_picker_keyboard(match_id, summaries),
+            reply_markup=slot_picker_keyboard(
+                match_id,
+                summaries,
+                language_code=lang,
+            ),
         )
 
     return on_text
