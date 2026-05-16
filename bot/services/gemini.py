@@ -24,6 +24,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+import aiohttp
 import google.generativeai as genai
 
 
@@ -31,6 +32,7 @@ logger = logging.getLogger(__name__)
 
 
 DEFAULT_MODEL = "gemini-2.5-flash"
+DEFAULT_VIDEO_FPS = 5.0
 UPLOAD_POLL_INTERVAL_S = 2.0
 UPLOAD_POLL_TIMEOUT_S = 120.0
 GENERATE_TIMEOUT_S = 120.0
@@ -58,9 +60,15 @@ class AnalysisOutput:
 class GeminiService:
     """Async-friendly wrapper. Configure once at startup with `configure()`."""
 
-    def __init__(self, api_key: str, model: str = DEFAULT_MODEL):
+    def __init__(
+        self,
+        api_key: str,
+        model: str = DEFAULT_MODEL,
+        video_fps: float = DEFAULT_VIDEO_FPS,
+    ):
         self._api_key = api_key
         self._model_name = model
+        self._video_fps = self._normalize_fps(video_fps)
         self._configured = False
         self._model: genai.GenerativeModel | None = None
 
@@ -79,6 +87,11 @@ class GeminiService:
             raise RuntimeError("GeminiService.configure() must be called before use")
         return self._model
 
+    @property
+    def video_fps(self) -> float:
+        """Default frame sampling rate for video prompts."""
+        return self._video_fps
+
     # --- public API ---------------------------------------------------
 
     async def analyze_text(self, prompt: str) -> AnalysisOutput:
@@ -95,21 +108,26 @@ class GeminiService:
         video_bytes: bytes,
         prompt: str,
         mime_type: str = "video/mp4",
+        fps: float | None = None,
     ) -> AnalysisOutput:
         """Upload bytes → wait for ACTIVE → generate_content → delete file."""
         started = time.monotonic()
+        video_fps = self._normalize_fps(fps if fps is not None else self._video_fps)
         uploaded = await self._upload_video(video_bytes, mime_type)
         try:
             await self._wait_until_active(uploaded)
             response = await asyncio.wait_for(
-                asyncio.to_thread(
-                    self.model.generate_content, [uploaded, prompt]
+                self._generate_video_with_metadata(
+                    uploaded,
+                    prompt,
+                    mime_type,
+                    video_fps,
                 ),
                 timeout=GENERATE_TIMEOUT_S,
             )
         finally:
             await self._delete_file_safe(uploaded)
-        return self._build_output(response, time.monotonic() - started)
+        return self._build_output_from_json(response, time.monotonic() - started)
 
     # --- internals ----------------------------------------------------
 
@@ -139,6 +157,68 @@ class GeminiService:
             len(video_bytes),
         )
         return uploaded
+
+    async def _generate_video_with_metadata(
+        self,
+        uploaded,
+        prompt: str,
+        mime_type: str,
+        fps: float,
+    ) -> dict:
+        """Call generateContent through REST so videoMetadata.fps is explicit."""
+        file_uri = getattr(uploaded, "uri", None)
+        if not file_uri:
+            raise GeminiError("Gemini upload did not return a file URI for videoMetadata")
+
+        uploaded_mime_type = getattr(uploaded, "mime_type", None) or mime_type
+        model_name = self._model_name
+        if model_name.startswith("models/"):
+            model_name = model_name.removeprefix("models/")
+
+        url = (
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{model_name}:generateContent"
+        )
+        payload = {
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [
+                        {
+                            "file_data": {
+                                "mime_type": uploaded_mime_type,
+                                "file_uri": file_uri,
+                            },
+                            "video_metadata": {"fps": fps},
+                        },
+                        {"text": prompt},
+                    ],
+                }
+            ]
+        }
+        headers = {
+            "Content-Type": "application/json",
+            "x-goog-api-key": self._api_key,
+        }
+        timeout = aiohttp.ClientTimeout(total=GENERATE_TIMEOUT_S)
+
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(url, headers=headers, json=payload) as response:
+                data = await response.json(content_type=None)
+                if response.status >= 400:
+                    error = data.get("error", {}) if isinstance(data, dict) else {}
+                    message = error.get("message") or str(data)
+                    raise GeminiError(
+                        f"Gemini generateContent failed "
+                        f"(status={response.status}, fps={fps:g}): {message}"
+                    )
+                logger.info(
+                    "gemini_generate_video model=%s fps=%s file=%s",
+                    self._model_name,
+                    f"{fps:g}",
+                    getattr(uploaded, "name", "?"),
+                )
+                return data
 
     async def _wait_until_active(self, uploaded) -> None:
         """Poll `get_file` until state == ACTIVE or timeout/FAILED."""
@@ -192,3 +272,39 @@ class GeminiService:
         return AnalysisOutput(
             raw_text=text, tokens_used=tokens, processing_seconds=elapsed
         )
+
+    @staticmethod
+    def _build_output_from_json(data: dict, elapsed: float) -> AnalysisOutput:
+        parts: list[str] = []
+        for candidate in data.get("candidates", []) or []:
+            content = candidate.get("content", {}) or {}
+            for part in content.get("parts", []) or []:
+                text = part.get("text")
+                if text:
+                    parts.append(text)
+
+        text = "\n".join(parts).strip()
+        if not text:
+            raise GeminiError("Gemini returned an empty response")
+
+        usage = data.get("usageMetadata") or data.get("usage_metadata") or {}
+        tokens = int(
+            usage.get("totalTokenCount")
+            or usage.get("total_token_count")
+            or 0
+        )
+        return AnalysisOutput(
+            raw_text=text,
+            tokens_used=tokens,
+            processing_seconds=elapsed,
+        )
+
+    @staticmethod
+    def _normalize_fps(fps: float) -> float:
+        try:
+            value = float(fps)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Gemini video FPS must be a number, got {fps!r}") from exc
+        if value <= 0:
+            raise ValueError(f"Gemini video FPS must be > 0, got {fps!r}")
+        return value

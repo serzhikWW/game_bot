@@ -37,6 +37,16 @@ def _optional_int(name: str, default: int) -> int:
         raise RuntimeError(f"Env var '{name}' must be an integer, got {raw!r}") from exc
 
 
+def _optional_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return float(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"Env var '{name}' must be a number, got {raw!r}") from exc
+
+
 def _optional_str(name: str, default: str) -> str:
     raw = os.getenv(name)
     return raw.strip() if raw and raw.strip() else default
@@ -47,6 +57,7 @@ class Settings:
     telegram_bot_token: str
     gemini_api_key: str
     gemini_model: str
+    gemini_video_fps: float
     free_analyses_per_day: int
     max_video_size_mb: int
     telegram_file_limit_mb: int
@@ -84,6 +95,7 @@ def _load_settings() -> Settings:
         # 1.5-pro was deprecated; current generation is 2.5-flash (fast, cheap)
         # or gemini-2.5-pro (slower, deeper). Override via env when needed.
         gemini_model=_optional_str("GEMINI_MODEL", "gemini-2.5-flash"),
+        gemini_video_fps=_optional_float("GEMINI_VIDEO_FPS", 5.0),
         free_analyses_per_day=_optional_int("FREE_ANALYSES_PER_DAY", 2),
         max_video_size_mb=_optional_int("MAX_VIDEO_SIZE_MB", 200),
         # Telegram's standard Bot API caps `getFile` downloads at 20 MB.
