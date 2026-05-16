@@ -27,7 +27,7 @@ MVP-игры:
 
 - Python 3.11+
 - `python-telegram-bot` v21 (async)
-- `google-generativeai` 0.8.x — Gemini 1.5 Pro для видео и текста
+- `google-generativeai` 0.8.x — Gemini 2.5 Pro/flash для видео и текста
 - `aiohttp` — клиент OpenDota
 - `aiosqlite` — SQLite в асинхронном режиме
 - Деплой: одиночный VPS + systemd
