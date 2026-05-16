@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import subprocess
 import tempfile
 import time
 from dataclasses import dataclass
@@ -36,6 +37,7 @@ DEFAULT_VIDEO_FPS = 5.0
 UPLOAD_POLL_INTERVAL_S = 2.0
 UPLOAD_POLL_TIMEOUT_S = 120.0
 GENERATE_TIMEOUT_S = 120.0
+FFMPEG_TIMEOUT_S = 120.0
 
 
 class GeminiError(RuntimeError):
@@ -135,19 +137,25 @@ class GeminiService:
         """Persist bytes to a temp file (the SDK takes a path) and upload."""
         # Run the blocking SDK calls + temp-file write in a thread.
         def _do_upload():
-            suffix = ".mp4" if mime_type.endswith("mp4") else ""
+            suffix = self._suffix_for_mime_type(mime_type)
+            cleanup_paths: list[Path] = []
             with tempfile.NamedTemporaryFile(
                 suffix=suffix, delete=False
             ) as tmp:
                 tmp.write(video_bytes)
                 tmp_path = Path(tmp.name)
+            cleanup_paths.append(tmp_path)
             try:
-                return genai.upload_file(path=str(tmp_path), mime_type=mime_type)
+                upload_path = self._strip_audio_track(tmp_path, mime_type)
+                if upload_path != tmp_path:
+                    cleanup_paths.append(upload_path)
+                return genai.upload_file(path=str(upload_path), mime_type=mime_type)
             finally:
-                try:
-                    tmp_path.unlink(missing_ok=True)
-                except OSError:
-                    logger.warning("temp_unlink_failed path=%s", tmp_path)
+                for path in cleanup_paths:
+                    try:
+                        path.unlink(missing_ok=True)
+                    except OSError:
+                        logger.warning("temp_unlink_failed path=%s", path)
 
         uploaded = await asyncio.to_thread(_do_upload)
         logger.info(
@@ -157,6 +165,77 @@ class GeminiService:
             len(video_bytes),
         )
         return uploaded
+
+    @staticmethod
+    def _strip_audio_track(path: Path, mime_type: str) -> Path:
+        """Return a temporary copy of the video with all audio streams removed."""
+        if not mime_type.startswith("video/"):
+            return path
+
+        suffix = path.suffix or GeminiService._suffix_for_mime_type(mime_type)
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            output_path = Path(tmp.name)
+
+        command = [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            str(path),
+            "-map",
+            "0:v:0",
+            "-an",
+            "-c:v",
+            "copy",
+            str(output_path),
+        ]
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=FFMPEG_TIMEOUT_S,
+            )
+        except FileNotFoundError as exc:
+            output_path.unlink(missing_ok=True)
+            raise GeminiError(
+                "ffmpeg is required to remove audio before Gemini upload"
+            ) from exc
+        except subprocess.TimeoutExpired as exc:
+            output_path.unlink(missing_ok=True)
+            raise GeminiError(
+                f"ffmpeg audio stripping timed out after {FFMPEG_TIMEOUT_S:.0f}s"
+            ) from exc
+
+        if result.returncode != 0:
+            output_path.unlink(missing_ok=True)
+            error = (result.stderr or result.stdout or "unknown ffmpeg error").strip()
+            raise GeminiError(f"ffmpeg failed to strip audio: {error}")
+
+        if not output_path.exists() or output_path.stat().st_size == 0:
+            output_path.unlink(missing_ok=True)
+            raise GeminiError("ffmpeg produced an empty no-audio video")
+
+        logger.info(
+            "video_audio_stripped input_size=%d output_size=%d",
+            path.stat().st_size,
+            output_path.stat().st_size,
+        )
+        return output_path
+
+    @staticmethod
+    def _suffix_for_mime_type(mime_type: str) -> str:
+        if mime_type.endswith("mp4"):
+            return ".mp4"
+        if mime_type.endswith("quicktime"):
+            return ".mov"
+        if mime_type.endswith("webm"):
+            return ".webm"
+        if mime_type.startswith("video/"):
+            return ".mp4"
+        return ""
 
     async def _generate_video_with_metadata(
         self,
